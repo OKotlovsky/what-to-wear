@@ -7,7 +7,7 @@ streamlit run app.py
 
 import streamlit as st
 import requests
-from datetime import date
+from datetime import date, timedelta
 
 # ── Page config ────────────────────────────────────────────────
 st.set_page_config(
@@ -17,7 +17,59 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# ── Geocode (cached 1 hr) ──────────────────────────────────────
+# ── CSS ────────────────────────────────────────────────────────
+st.markdown("""
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
+*, html, body, [class*="css"] {
+    font-family: 'Inter', -apple-system, sans-serif !important;
+}
+#MainMenu, footer, header { display: none !important; }
+.stApp { background: #f0f2f5; }
+.block-container {
+    padding: 2rem 1.2rem !important;
+    max-width: 380px !important;
+    margin: auto !important;
+}
+.app-title {
+    text-align: center;
+    font-size: 1.3rem;
+    font-weight: 800;
+    color: #1a1a2e;
+    margin-bottom: 1.4rem;
+}
+.stButton > button {
+    width: 100% !important;
+    border-radius: 14px !important;
+    background: linear-gradient(135deg, #667eea, #764ba2) !important;
+    color: white !important;
+    font-weight: 700 !important;
+    font-size: 1rem !important;
+    padding: 0.75rem !important;
+    border: none !important;
+    margin-top: 0.4rem !important;
+    box-shadow: 0 4px 18px rgba(102,126,234,0.38) !important;
+}
+.result-box {
+    margin-top: 1.2rem;
+    background: white;
+    border-radius: 20px;
+    padding: 1.3rem 1.2rem;
+    text-align: center;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+}
+.result-meta    { font-size: 0.75rem; font-weight: 600; color: #8b9ab1;
+                  text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.4rem; }
+.result-weather { font-size: 0.95rem; color: #4a5568; margin-bottom: 0.6rem; }
+.result-emoji   { font-size: 2.2rem; margin-bottom: 0.3rem; }
+.result-outfit  { font-size: 1.3rem; font-weight: 800; color: #1a1a2e; }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ── Geocode ────────────────────────────────────────────────────
 @st.cache_data(ttl=3600)
 def geocode(city: str) -> dict | None:
     try:
@@ -30,78 +82,103 @@ def geocode(city: str) -> dict | None:
         if not results:
             return None
         loc = results[0]
-        return {"name": loc["name"], "country": loc.get("country",""),
+        return {"name": loc["name"], "country": loc.get("country", ""),
                 "lat": loc["latitude"], "lon": loc["longitude"]}
     except Exception:
         return None
 
 
-# ── Weather fetch (cached 30 min) ──────────────────────────────
+# ── Weather fetch (FIXED) ──────────────────────────────────────
 @st.cache_data(ttl=1800)
 def get_weather(lat: float, lon: float, day: date) -> dict | None:
     """
-    Returns temp_max (°C), temp_min (°C), precip_mm, wind_kph
-    for a single day. Uses forecast endpoint if within 16 days,
-    otherwise falls back to archive (last-year proxy).
+    Routing logic:
+      • today or future within 16 days → forecast endpoint
+      • past or future beyond 16 days  → archive endpoint using
+        the equivalent date from LAST YEAR as a climate proxy
+    The archive endpoint only accepts dates up to ~5 days ago,
+    so we always shift far-future requests to last year.
     """
-    from datetime import date as _date, timedelta
-    today = _date.today()
-    delta = (day - today).days
-    base  = {"latitude": lat, "longitude": lon, "timezone": "auto",
-             "daily": "temperature_2m_max,temperature_2m_min,"
-                      "precipitation_sum,windspeed_10m_max"}
+    today = date.today()
+    delta = (day - today).days          # negative = past, positive = future
 
-    # Pick endpoint
-    if -365 <= delta <= 16:
-        url   = ("https://api.open-meteo.com/v1/forecast" if delta >= 0
-                 else "https://archive-api.open-meteo.com/v1/archive")
-        s = e = day
+    FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+    ARCHIVE_URL  = "https://archive-api.open-meteo.com/v1/archive"
+
+    daily_vars = ("temperature_2m_max,temperature_2m_min,"
+                  "precipitation_sum,windspeed_10m_max")
+
+    if 0 <= delta <= 15:
+        # ── Live forecast (today + up to 15 days ahead) ──────
+        url      = FORECAST_URL
+        req_date = day
+        is_proxy = False
+
+    elif delta < 0:
+        # ── Past date → archive ──────────────────────────────
+        # Archive has data up to ~2 days ago; for very recent
+        # past dates still use forecast which carries a short history.
+        if delta >= -2:
+            url      = FORECAST_URL
+            req_date = day
+        else:
+            url      = ARCHIVE_URL
+            req_date = day
+        is_proxy = False
+
     else:
-        # proxy: same calendar window last year
-        url   = "https://archive-api.open-meteo.com/v1/archive"
-        s = e = day.replace(year=day.year - 1)
+        # ── Future beyond 15 days → same calendar date last year ──
+        try:
+            req_date = day.replace(year=day.year - 1)
+        except ValueError:                      # Feb 29 edge case
+            req_date = day.replace(year=day.year - 1, day=28)
+        url      = ARCHIVE_URL
+        is_proxy = True
+
+    params = {
+        "latitude":   lat,
+        "longitude":  lon,
+        "timezone":   "auto",
+        "daily":      daily_vars,
+        "start_date": req_date.isoformat(),
+        "end_date":   req_date.isoformat(),
+    }
 
     try:
-        r = requests.get(url, params={**base,
-            "start_date": s.isoformat(), "end_date": e.isoformat()}, timeout=7)
+        r = requests.get(url, params=params, timeout=8)
+        r.raise_for_status()
         d = r.json().get("daily", {})
-        if not d.get("time"):
+        times = d.get("time", [])
+        if not times:
             return None
         return {
             "temp_max":  d["temperature_2m_max"][0],
             "temp_min":  d["temperature_2m_min"][0],
             "precip_mm": d["precipitation_sum"][0] or 0,
             "wind_kph":  d["windspeed_10m_max"][0] or 0,
-            "proxy":     delta > 16,
+            "proxy":     is_proxy,
         }
-    except Exception:
+    except Exception as e:
+        # Expose the error in the app so it's easier to debug
+        st.error(f"Weather API error: {e}")
         return None
 
 
 # ── Clothing ladder ────────────────────────────────────────────
 def outfit(temp_max: float, precip_mm: float, wind_kph: float) -> tuple[str, str]:
-    """
-    Returns (emoji, directive_string).
-    Single conditional ladder — no loops, no lists.
-    """
     rain  = precip_mm > 2
     windy = wind_kph  > 35
 
     if temp_max >= 27:
-        base = "Short shirt + Shorts"
-        icon = "🩳"
+        base, icon = "Short shirt + Shorts", "🩳"
     elif temp_max >= 20:
-        base = "Short shirt + Long pants"
-        icon = "👖"
+        base, icon = "Short shirt + Long pants", "👖"
     elif temp_max >= 13:
-        base = "Long shirt + Light coat"
-        icon = "🧥"
+        base, icon = "Long shirt + Light coat", "🧥"
     elif temp_max >= 5:
-        base = "Long shirt + Heavy coat"
-        icon = "🧤"
+        base, icon = "Long shirt + Heavy coat", "🧤"
     else:
-        base = "Thermals + Heavy coat + Boots"
-        icon = "❄️"
+        base, icon = "Thermals + Heavy coat + Boots", "❄️"
 
     if rain:
         base += " + Umbrella"
@@ -112,19 +189,14 @@ def outfit(temp_max: float, precip_mm: float, wind_kph: float) -> tuple[str, str
     return icon, base
 
 
-# ── Weather summary sentence ───────────────────────────────────
+# ── Weather summary ────────────────────────────────────────────
 def weather_summary(w: dict) -> str:
-    t   = f"{w['temp_max']:.0f}°C"
-    p   = w["precip_mm"]
-    spd = w["wind_kph"]
-
-    parts = [t]
-    if p > 5:   parts.append("rainy")
-    elif p > 1: parts.append("light showers")
-    if spd > 50: parts.append("very windy")
-    elif spd > 35: parts.append("windy")
-
-    suffix = " (estimated from last year)" if w.get("proxy") else ""
+    parts = [f"{w['temp_max']:.0f}°C"]
+    if   w["precip_mm"] > 5: parts.append("rainy")
+    elif w["precip_mm"] > 1: parts.append("light showers")
+    if   w["wind_kph"]  > 50: parts.append("very windy")
+    elif w["wind_kph"]  > 35: parts.append("windy")
+    suffix = " · climate estimate" if w.get("proxy") else ""
     return " and ".join(parts) + suffix
 
 
@@ -143,14 +215,13 @@ def ip_city() -> str:
 # ══════════════════════════════════════════════
 st.markdown('<div class="app-title">👗 What to Wear?</div>', unsafe_allow_html=True)
 
-city = st.text_input("Destination", value=ip_city(), label_visibility="visible",
+city = st.text_input("Destination", value=ip_city(),
                      placeholder="e.g. Paris, Tokyo, New York…")
 
-travel_date = st.date_input("Date", value=date.today(), label_visibility="visible")
+travel_date = st.date_input("Date", value=date.today())
 
 go = st.button("Check What to Wear")
 
-# ── Result (only shown after button press) ─────────────────────
 if go:
     if not city.strip():
         st.error("Please enter a destination.")
@@ -164,12 +235,12 @@ if go:
 
         w = get_weather(loc["lat"], loc["lon"], travel_date)
         if not w:
-            st.error("Weather data unavailable for that date. Try another date.")
+            st.error("Weather data unavailable. Try a different date.")
             st.stop()
 
     icon, directive = outfit(w["temp_max"], w["precip_mm"], w["wind_kph"])
-    summary         = weather_summary(w)
-    date_str        = travel_date.strftime("%d %b %Y")
+    summary  = weather_summary(w)
+    date_str = travel_date.strftime("%d %b %Y")
 
     st.markdown(f"""
     <div class="result-box">
