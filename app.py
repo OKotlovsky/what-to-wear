@@ -177,25 +177,18 @@ def geocode(city: str) -> dict | None:
 # ── Weather fetch (cached 30 min) ──────────────────────────────
 @st.cache_data(ttl=1800)
 def get_weather(lat: float, lon: float, day: date) -> dict | None:
-    """
-    Returns temp_max (°C), temp_min (°C), precip_mm, wind_kph
-    for a single day. Uses forecast endpoint if within 16 days,
-    otherwise falls back to archive (last-year proxy).
-    """
-    from datetime import date as _date, timedelta
+    from datetime import date as _date
     today = _date.today()
     delta = (day - today).days
     base  = {"latitude": lat, "longitude": lon, "timezone": "auto",
              "daily": "temperature_2m_max,temperature_2m_min,"
                       "precipitation_sum,windspeed_10m_max"}
 
-    # Pick endpoint
     if -365 <= delta <= 16:
         url   = ("https://api.open-meteo.com/v1/forecast" if delta >= 0
                  else "https://archive-api.open-meteo.com/v1/archive")
         s = e = day
     else:
-        # proxy: same calendar window last year
         url   = "https://archive-api.open-meteo.com/v1/archive"
         s = e = day.replace(year=day.year - 1)
 
@@ -218,12 +211,7 @@ def get_weather(lat: float, lon: float, day: date) -> dict | None:
 
 # ── Clothing ladder ────────────────────────────────────────────
 def outfit(temp_max: float, precip_mm: float, wind_kph: float) -> tuple[str, str]:
-    """
-    Returns (emoji, directive_string).
-    Single conditional ladder — no loops, no lists.
-    """
     rain  = precip_mm > 2
-    windy = wind_kph  > 35
 
     if temp_max >= 27:
         base = "Short shirt + Shorts"
@@ -233,19 +221,17 @@ def outfit(temp_max: float, precip_mm: float, wind_kph: float) -> tuple[str, str
         icon = "👖"
     elif temp_max >= 13:
         base = "Long shirt + Light coat"
-        icon = "🧥"
+        icon = "Coat"
     elif temp_max >= 5:
         base = "Long shirt + Heavy coat"
-        icon = "🧤"
+        icon = "🧥"
     else:
-        base = "Thermals + Heavy coat + Boots"
+        base = "Thermals + Heavy coat"
         icon = "❄️"
 
     if rain:
         base += " + Umbrella"
         icon  = "☂️"
-    elif windy and temp_max < 20:
-        base += " + Windproof layer"
 
     return icon, base
 
@@ -257,12 +243,11 @@ def weather_summary(w: dict) -> str:
     spd = w["wind_kph"]
 
     parts = [t]
-    if p > 5:   parts.append("rainy")
-    elif p > 1: parts.append("light showers")
-    if spd > 50: parts.append("very windy")
-    elif spd > 35: parts.append("windy")
+    if p > 5:    parts.append("rainy")
+    elif p > 1:  parts.append("light showers")
+    if spd > 35: parts.append("windy")
 
-    suffix = " (estimated from last year)" if w.get("proxy") else ""
+    suffix = " (estimated)" if w.get("proxy") else ""
     return " and ".join(parts) + suffix
 
 
@@ -271,9 +256,9 @@ def weather_summary(w: dict) -> str:
 def ip_city() -> str:
     try:
         return requests.get("http://ip-api.com/json/?fields=city",
-                            timeout=3).json().get("city", "London")
+                            timeout=3).json().get("city", "New York")
     except Exception:
-        return "London"
+        return "New York"
 
 
 # ══════════════════════════════════════════════
@@ -302,7 +287,7 @@ if go:
 
         w = get_weather(loc["lat"], loc["lon"], travel_date)
         if not w:
-            st.error("Weather data unavailable for that date. Try another date.")
+            st.error("Weather data unavailable for that date.")
             st.stop()
 
     icon, directive = outfit(w["temp_max"], w["precip_mm"], w["wind_kph"])
@@ -311,7 +296,7 @@ if go:
 
     st.markdown(f"""
     <div class="result-box">
-      <div class="result-meta">📍 {loc['name']}, {loc['country']} · {date_str}</div>
+      <div class="result-meta">📍 {loc['name']} · {date_str}</div>
       <div class="result-weather">{summary}</div>
       <div class="result-emoji">{icon}</div>
       <div class="result-outfit">{directive}</div>
