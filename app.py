@@ -1,10 +1,3 @@
-"""
-What to Wear — Ultra-minimal iPhone app
-========================================
-pip install streamlit requests
-streamlit run app.py
-"""
-
 import streamlit as st
 import requests
 from datetime import date
@@ -221,7 +214,7 @@ def outfit(temp_max: float, precip_mm: float, wind_kph: float) -> tuple[str, str
         icon = "👖"
     elif temp_max >= 13:
         base = "Long shirt + Light coat"
-        icon = "Coat"
+        icon = "🧥"
     elif temp_max >= 5:
         base = "Long shirt + Heavy coat"
         icon = "🧥"
@@ -247,7 +240,7 @@ def weather_summary(w: dict) -> str:
     elif p > 1:  parts.append("light showers")
     if spd > 35: parts.append("windy")
 
-    suffix = " (estimated)" if w.get("proxy") else ""
+    suffix = ""
     return " and ".join(parts) + suffix
 
 
@@ -256,9 +249,9 @@ def weather_summary(w: dict) -> str:
 def ip_city() -> str:
     try:
         return requests.get("http://ip-api.com/json/?fields=city",
-                            timeout=3).json().get("city", "New York")
+                            timeout=3).json().get("city", "Seattle")
     except Exception:
-        return "New York"
+        return "Seattle"
 
 
 # ══════════════════════════════════════════════
@@ -267,7 +260,7 @@ def ip_city() -> str:
 st.markdown('<div class="app-title">👗 What to Wear?</div>', unsafe_allow_html=True)
 
 city = st.text_input("Destination", value=ip_city(), label_visibility="visible",
-                     placeholder="e.g. Paris, Tokyo, New York…")
+                     placeholder="e.g. Seattle, Tokyo, Paris…")
 
 travel_date = st.date_input("Date", value=date.today(), label_visibility="visible")
 
@@ -287,12 +280,12 @@ if go:
 
         w = get_weather(loc["lat"], loc["lon"], travel_date)
         if not w:
-            st.error("Weather data unavailable for that date.")
+            st.error("Weather data unavailable.")
             st.stop()
 
     icon, directive = outfit(w["temp_max"], w["precip_mm"], w["wind_kph"])
     summary         = weather_summary(w)
-    date_str        = travel_date.strftime("%d %b %Y")
+    date_str        = travel_date.strftime("%d %b")
 
     st.markdown(f"""
     <div class="result-box">
