@@ -1,3 +1,10 @@
+"""
+What to Wear — Ultra-minimal iPhone app
+========================================
+pip install streamlit requests
+streamlit run app.py
+"""
+
 import streamlit as st
 import requests
 from datetime import date
@@ -6,7 +13,8 @@ from datetime import date
 st.set_page_config(
     page_title="What to Wear",
     page_icon="👗",
-    layout="centered"
+    layout="centered",
+    initial_sidebar_state="collapsed",
 )
 
 # ── Geocode (cached 1 hr) ──────────────────────────────────────
@@ -27,21 +35,29 @@ def geocode(city: str) -> dict | None:
     except Exception:
         return None
 
+
 # ── Weather fetch (cached 30 min) ──────────────────────────────
 @st.cache_data(ttl=1800)
 def get_weather(lat: float, lon: float, day: date) -> dict | None:
-    from datetime import date as _date
+    """
+    Returns temp_max (°C), temp_min (°C), precip_mm, wind_kph
+    for a single day. Uses forecast endpoint if within 16 days,
+    otherwise falls back to archive (last-year proxy).
+    """
+    from datetime import date as _date, timedelta
     today = _date.today()
     delta = (day - today).days
     base  = {"latitude": lat, "longitude": lon, "timezone": "auto",
              "daily": "temperature_2m_max,temperature_2m_min,"
                       "precipitation_sum,windspeed_10m_max"}
 
+    # Pick endpoint
     if -365 <= delta <= 16:
         url   = ("https://api.open-meteo.com/v1/forecast" if delta >= 0
                  else "https://archive-api.open-meteo.com/v1/archive")
         s = e = day
     else:
+        # proxy: same calendar window last year
         url   = "https://archive-api.open-meteo.com/v1/archive"
         s = e = day.replace(year=day.year - 1)
 
@@ -61,9 +77,15 @@ def get_weather(lat: float, lon: float, day: date) -> dict | None:
     except Exception:
         return None
 
+
 # ── Clothing ladder ────────────────────────────────────────────
 def outfit(temp_max: float, precip_mm: float, wind_kph: float) -> tuple[str, str]:
+    """
+    Returns (emoji, directive_string).
+    Single conditional ladder — no loops, no lists.
+    """
     rain  = precip_mm > 2
+    windy = wind_kph  > 35
 
     if temp_max >= 27:
         base = "Short shirt + Shorts"
@@ -76,16 +98,19 @@ def outfit(temp_max: float, precip_mm: float, wind_kph: float) -> tuple[str, str
         icon = "🧥"
     elif temp_max >= 5:
         base = "Long shirt + Heavy coat"
-        icon = "🧥"
+        icon = "🧤"
     else:
-        base = "Thermals + Heavy coat"
+        base = "Thermals + Heavy coat + Boots"
         icon = "❄️"
 
     if rain:
         base += " + Umbrella"
         icon  = "☂️"
+    elif windy and temp_max < 20:
+        base += " + Windproof layer"
 
     return icon, base
+
 
 # ── Weather summary sentence ───────────────────────────────────
 def weather_summary(w: dict) -> str:
@@ -94,28 +119,35 @@ def weather_summary(w: dict) -> str:
     spd = w["wind_kph"]
 
     parts = [t]
-    if p > 5:    parts.append("rainy")
-    elif p > 1:  parts.append("light showers")
-    if spd > 35: parts.append("windy")
+    if p > 5:   parts.append("rainy")
+    elif p > 1: parts.append("light showers")
+    if spd > 50: parts.append("very windy")
+    elif spd > 35: parts.append("windy")
 
-    return " and ".join(parts)
+    suffix = " (estimated from last year)" if w.get("proxy") else ""
+    return " and ".join(parts) + suffix
+
 
 # ── Default city from IP ───────────────────────────────────────
 @st.cache_data(ttl=3600)
 def ip_city() -> str:
     try:
         return requests.get("http://ip-api.com/json/?fields=city",
-                            timeout=3).json().get("city", "Seattle")
+                            timeout=3).json().get("city", "London")
     except Exception:
-        return "Seattle"
+        return "London"
+
 
 # ══════════════════════════════════════════════
 #  UI
 # ══════════════════════════════════════════════
-st.title("👗 What to Wear?")
+st.markdown('<div class="app-title">👗 What to Wear?</div>', unsafe_allow_html=True)
 
-city = st.text_input("Destination", value=ip_city(), placeholder="e.g. Seattle, Tokyo...")
-travel_date = st.date_input("Date", value=date.today())
+city = st.text_input("Destination", value=ip_city(), label_visibility="visible",
+                     placeholder="e.g. Paris, Tokyo, New York…")
+
+travel_date = st.date_input("Date", value=date.today(), label_visibility="visible")
+
 go = st.button("Check What to Wear")
 
 # ── Result (only shown after button press) ─────────────────────
@@ -124,7 +156,7 @@ if go:
         st.error("Please enter a destination.")
         st.stop()
 
-    with st.spinner("Fetching weather..."):
+    with st.spinner(""):
         loc = geocode(city.strip())
         if not loc:
             st.error(f"Can't find '{city}'. Try a nearby city.")
@@ -132,14 +164,18 @@ if go:
 
         w = get_weather(loc["lat"], loc["lon"], travel_date)
         if not w:
-            st.error("Weather data unavailable.")
+            st.error("Weather data unavailable for that date. Try another date.")
             st.stop()
 
     icon, directive = outfit(w["temp_max"], w["precip_mm"], w["wind_kph"])
     summary         = weather_summary(w)
-    date_str        = travel_date.strftime("%d %b")
+    date_str        = travel_date.strftime("%d %b %Y")
 
-    st.write("---")
-    st.subheader(f"📍 {loc['name']} · {date_str}")
-    st.write(f"**Weather:** {summary}")
-    st.write(f"**Recommendation:** {icon} {directive}")
+    st.markdown(f"""
+    <div class="result-box">
+      <div class="result-meta">📍 {loc['name']}, {loc['country']} · {date_str}</div>
+      <div class="result-weather">{summary}</div>
+      <div class="result-emoji">{icon}</div>
+      <div class="result-outfit">{directive}</div>
+    </div>
+    """, unsafe_allow_html=True)
