@@ -297,7 +297,7 @@ if go:
     with st.spinner(""):
         loc = geocode(city.strip())
         if not loc:
-            st.error(f"Can't find "{city}". Try a nearby city.")
+            st.error("Can't find "{city}". Try a nearby city.")
             st.stop()
 
         w = get_weather(loc["lat"], loc["lon"], travel_date)
