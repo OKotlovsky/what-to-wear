@@ -89,51 +89,37 @@ def geocode(city: str) -> dict | None:
 
 
 # ── Weather fetch (FIXED) ──────────────────────────────────────
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=1800)  # cache keyed on lat/lon/day — prevents repeat API hits
 def get_weather(lat: float, lon: float, day: date) -> dict | None:
     """
     Routing logic:
-      • today or future within 16 days → forecast endpoint
-      • past or future beyond 16 days  → archive endpoint using
-        the equivalent date from LAST YEAR as a climate proxy
-    The archive endpoint only accepts dates up to ~5 days ago,
-    so we always shift far-future requests to last year.
+      • today / next 15 days  → forecast endpoint
+      • past > 2 days         → archive endpoint
+      • future > 15 days      → archive using same date last year (climate proxy)
+    Retries up to 3 times with backoff on 429 rate-limit errors.
     """
+    import time
+
     today = date.today()
-    delta = (day - today).days          # negative = past, positive = future
+    delta = (day - today).days
 
     FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
     ARCHIVE_URL  = "https://archive-api.open-meteo.com/v1/archive"
-
-    daily_vars = ("temperature_2m_max,temperature_2m_min,"
-                  "precipitation_sum,windspeed_10m_max")
+    daily_vars   = ("temperature_2m_max,temperature_2m_min,"
+                    "precipitation_sum,windspeed_10m_max")
 
     if 0 <= delta <= 15:
-        # ── Live forecast (today + up to 15 days ahead) ──────
-        url      = FORECAST_URL
-        req_date = day
-        is_proxy = False
-
-    elif delta < 0:
-        # ── Past date → archive ──────────────────────────────
-        # Archive has data up to ~2 days ago; for very recent
-        # past dates still use forecast which carries a short history.
-        if delta >= -2:
-            url      = FORECAST_URL
-            req_date = day
-        else:
-            url      = ARCHIVE_URL
-            req_date = day
-        is_proxy = False
-
+        url, req_date, is_proxy = FORECAST_URL, day, False
+    elif -2 <= delta < 0:
+        url, req_date, is_proxy = FORECAST_URL, day, False
+    elif delta < -2:
+        url, req_date, is_proxy = ARCHIVE_URL, day, False
     else:
-        # ── Future beyond 15 days → same calendar date last year ──
         try:
             req_date = day.replace(year=day.year - 1)
-        except ValueError:                      # Feb 29 edge case
+        except ValueError:
             req_date = day.replace(year=day.year - 1, day=28)
-        url      = ARCHIVE_URL
-        is_proxy = True
+        url, is_proxy = ARCHIVE_URL, True
 
     params = {
         "latitude":   lat,
@@ -144,24 +130,28 @@ def get_weather(lat: float, lon: float, day: date) -> dict | None:
         "end_date":   req_date.isoformat(),
     }
 
-    try:
-        r = requests.get(url, params=params, timeout=8)
-        r.raise_for_status()
-        d = r.json().get("daily", {})
-        times = d.get("time", [])
-        if not times:
-            return None
-        return {
-            "temp_max":  d["temperature_2m_max"][0],
-            "temp_min":  d["temperature_2m_min"][0],
-            "precip_mm": d["precipitation_sum"][0] or 0,
-            "wind_kph":  d["windspeed_10m_max"][0] or 0,
-            "proxy":     is_proxy,
-        }
-    except Exception as e:
-        # Expose the error in the app so it's easier to debug
-        st.error(f"Weather API error: {e}")
-        return None
+    # ── Retry loop: 3 attempts with 1s / 3s backoff on 429 ──
+    for attempt in range(3):
+        try:
+            r = requests.get(url, params=params, timeout=8)
+            if r.status_code == 429:
+                time.sleep(2 ** attempt)   # 1s, 2s, 4s
+                continue
+            r.raise_for_status()
+            d = r.json().get("daily", {})
+            if not d.get("time"):
+                return None
+            return {
+                "temp_max":  d["temperature_2m_max"][0],
+                "temp_min":  d["temperature_2m_min"][0],
+                "precip_mm": d["precipitation_sum"][0] or 0,
+                "wind_kph":  d["windspeed_10m_max"][0] or 0,
+                "proxy":     is_proxy,
+            }
+        except requests.exceptions.RequestException:
+            time.sleep(2 ** attempt)
+
+    return None  # all retries exhausted
 
 
 # ── Clothing ladder ────────────────────────────────────────────
