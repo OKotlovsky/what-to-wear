@@ -217,16 +217,15 @@ if go:
         st.error("Please enter a destination.")
         st.stop()
 
-    with st.spinner(""):
-        loc = geocode(city.strip())
-        if not loc:
-            st.error(f"Can't find '{city}'. Try a nearby city.")
-            st.stop()
+    loc = geocode(city.strip())
+    if not loc:
+        st.error(f"Can't find '{city}'. Try a nearby city.")
+        st.stop()
 
-        w = get_weather(loc["lat"], loc["lon"], travel_date)
-        if not w:
-            st.error("Weather data unavailable. Try a different date.")
-            st.stop()
+    w = get_weather(loc["lat"], loc["lon"], travel_date)
+    if not w:
+        st.error("Weather data unavailable. Try again in a few seconds.")
+        st.stop()
 
     icon, directive = outfit(w["temp_max"], w["precip_mm"], w["wind_kph"])
     summary  = weather_summary(w)
